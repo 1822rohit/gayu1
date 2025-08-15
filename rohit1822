@@ -12,16 +12,12 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 
-# ----------------------------
-# Page config
-# ----------------------------
+
 st.set_page_config(page_title="House Price Prediction", page_icon="🏠", layout="wide")
 st.title("🏠 House Price Prediction (Streamlit)")
 st.write("Train a model on your own data or try a built-in demo. Get metrics, feature importances, and make single predictions interactively.")
 
-# ----------------------------
-# Helper: Demo dataset generator
-# ----------------------------
+
 def make_demo_data(n=500, random_state=42):
     rng = np.random.default_rng(random_state)
     bedrooms = rng.integers(1, 6, size=n)
