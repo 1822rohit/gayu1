@@ -1,0 +1,261 @@
+import io
+import pickle
+import numpy as np
+import pandas as pd
+import streamlit as st
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
+
+# ----------------------------
+# Page config
+# ----------------------------
+st.set_page_config(page_title="House Price Prediction", page_icon="🏠", layout="wide")
+st.title("🏠 House Price Prediction (Streamlit)")
+st.write("Train a model on your own data or try a built-in demo. Get metrics, feature importances, and make single predictions interactively.")
+
+# ----------------------------
+# Helper: Demo dataset generator
+# ----------------------------
+def make_demo_data(n=500, random_state=42):
+    rng = np.random.default_rng(random_state)
+    bedrooms = rng.integers(1, 6, size=n)
+    bathrooms = rng.integers(1, 4, size=n)
+    sqft_living = rng.normal(1500, 500, size=n).clip(400, 4500).astype(int)
+    sqft_lot = rng.normal(5000, 3000, size=n).clip(800, 30000).astype(int)
+    floors = rng.choice([1, 1.5, 2], size=n, p=[0.5, 0.2, 0.3])
+    waterfront = rng.choice([0, 1], size=n, p=[0.9, 0.1])
+    view = rng.integers(0, 5, size=n)
+    condition = rng.integers(1, 6, size=n)
+    grade = rng.integers(1, 13, size=n)
+    yr_built = rng.integers(1950, 2023, size=n)
+    zipcode = rng.choice(["411001","411014","560001","560076","400001","400706"], size=n)
+
+    # Price: a synthetic formula + noise (rough, for demo)
+    price = (
+        50000
+        + bedrooms * 50000
+        + bathrooms * 75000
+        + sqft_living * 200
+        + (sqft_lot ** 0.5) * 1000
+        + (floors * 20000)
+        + waterfront * 150000
+        + view * 30000
+        + condition * 15000
+        + grade * 40000
+        + (2025 - yr_built) * (-1500)
+        + rng.normal(0, 50000, size=n)
+    ).clip(30000, None)
+
+    df = pd.DataFrame({
+        "bedrooms": bedrooms,
+        "bathrooms": bathrooms,
+        "sqft_living": sqft_living,
+        "sqft_lot": sqft_lot,
+        "floors": floors,
+        "waterfront": waterfront,
+        "view": view,
+        "condition": condition,
+        "grade": grade,
+        "yr_built": yr_built,
+        "zipcode": zipcode,
+        "price": price.astype(int),
+    })
+    return df
+
+# ----------------------------
+# Sidebar: Data input
+# ----------------------------
+st.sidebar.header("1) Data")
+data_mode = st.sidebar.radio(
+    "Select data source:",
+    ["Use demo dataset", "Upload CSV"],
+    index=0
+)
+
+if data_mode == "Upload CSV":
+    uploaded = st.sidebar.file_uploader("Upload a CSV file", type=["csv"])
+else:
+    uploaded = None
+
+if uploaded is not None:
+    df = pd.read_csv(uploaded)
+    st.success("CSV uploaded successfully.")
+else:
+    df = make_demo_data(n=600)
+    st.info("Using demo dataset (synthetic, realistic-looking columns).")
+
+st.subheader("Dataset Snapshot")
+st.dataframe(df.head(10), use_container_width=True)
+
+# Pick target
+st.sidebar.header("2) Settings")
+default_target = "price" if "price" in df.columns else df.columns[-1]
+target_col = st.sidebar.selectbox("Select target (price column)", options=df.columns, index=list(df.columns).index(default_target))
+
+# Features = all non-target columns
+feature_cols = [c for c in df.columns if c != target_col]
+st.write(f"**Target:** `{target_col}`")
+st.write(f"**Features:** {feature_cols}")
+
+# Identify numeric vs categorical columns
+numeric_cols = [c for c in feature_cols if pd.api.types.is_numeric_dtype(df[c])]
+categorical_cols = [c for c in feature_cols if not pd.api.types.is_numeric_dtype(df[c])]
+
+# ----------------------------
+# Sidebar: Model params
+# ----------------------------
+st.sidebar.header("3) Model & Training")
+model_name = st.sidebar.selectbox("Model", ["RandomForestRegressor", "LinearRegression"], index=0)
+test_size = st.sidebar.slider("Test size (fraction)", 0.1, 0.5, 0.2, 0.05)
+random_state = st.sidebar.number_input("Random state", value=42, step=1)
+
+if model_name == "RandomForestRegressor":
+    rf_n_estimators = st.sidebar.slider("RF: n_estimators", 50, 500, 200, 25)
+    rf_max_depth = st.sidebar.slider("RF: max_depth (None = auto)", 0, 50, 0, 1)
+else:
+    rf_n_estimators = None
+    rf_max_depth = None
+
+# ----------------------------
+# Train / Test split
+# ----------------------------
+df = df.dropna(axis=0)  # simple handling for demo
+X = df[feature_cols].copy()
+y = df[target_col].values
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=test_size, random_state=random_state
+)
+
+# ----------------------------
+# Preprocess + Model pipeline
+# ----------------------------
+preprocess = ColumnTransformer(
+    transformers=[
+        ("num", StandardScaler(), numeric_cols),
+        ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols),
+    ],
+    remainder="drop"
+)
+
+if model_name == "RandomForestRegressor":
+    model = RandomForestRegressor(
+        n_estimators=rf_n_estimators,
+        max_depth=None if rf_max_depth == 0 else rf_max_depth,
+        random_state=random_state,
+        n_jobs=-1,
+    )
+else:
+    model = LinearRegression()
+
+pipe = Pipeline(steps=[
+    ("preprocess", preprocess),
+    ("model", model)
+])
+
+# ----------------------------
+# Train
+# ----------------------------
+pipe.fit(X_train, y_train)
+preds = pipe.predict(X_test)
+
+mae = mean_absolute_error(y_test, preds)
+rmse = mean_squared_error(y_test, preds, squared=False)
+r2 = r2_score(y_test, preds)
+
+st.subheader("Model Performance")
+c1, c2, c3 = st.columns(3)
+c1.metric("MAE", f"{mae:,.0f}")
+c2.metric("RMSE", f"{rmse:,.0f}")
+c3.metric("R²", f"{r2:.3f}")
+
+# ----------------------------
+# Feature importance (RF only)
+# ----------------------------
+def plot_feature_importance(pipe, numeric_cols, categorical_cols):
+    if not isinstance(pipe.named_steps["model"], RandomForestRegressor):
+        st.info("Feature importance is available for RandomForestRegressor only.")
+        return
+
+    # Get the names after preprocessing
+    ohe = pipe.named_steps["preprocess"].named_transformers_["cat"]
+    cat_feature_names = []
+    if categorical_cols:
+        cat_feature_names = list(ohe.get_feature_names_out(categorical_cols))
+    feature_names = numeric_cols + cat_feature_names
+
+    importances = pipe.named_steps["model"].feature_importances_
+    idx = np.argsort(importances)[::-1]
+    sorted_names = [feature_names[i] for i in idx]
+    sorted_vals = importances[idx]
+
+    plt.figure(figsize=(7, 5))
+    plt.barh(sorted_names[::-1], sorted_vals[::-1])
+    plt.xlabel("Importance")
+    plt.ylabel("Feature")
+    plt.title("Feature Importance")
+    st.pyplot(plt.gcf())
+    plt.close()
+
+st.subheader("Feature Importance")
+plot_feature_importance(pipe, numeric_cols, categorical_cols)
+
+# ----------------------------
+# Single Prediction UI
+# ----------------------------
+st.subheader("Make a Single Prediction")
+st.write("Enter feature values below and click **Predict**.")
+
+def widget_for_col(col_name, series):
+    if pd.api.types.is_numeric_dtype(series):
+        vmin, vmax = float(series.min()), float(series.max())
+        vdefault = float(series.median())
+        step = 1.0 if series.dtype.kind in ("i", "u") else 0.1
+        return st.number_input(
+            f"{col_name} ({series.dtype})",
+            value=vdefault,
+            min_value=vmin,
+            max_value=vmax,
+            step=step
+        )
+    else:
+        options = sorted(series.dropna().astype(str).unique().tolist())
+        default_idx = 0 if not options else min(len(options)//2, len(options)-1)
+        return st.selectbox(f"{col_name} (categorical)", options=options, index=default_idx if options else 0)
+
+user_inputs = {}
+form = st.form("predict_form")
+with form:
+    cols = st.columns(3)
+    for i, col in enumerate(feature_cols):
+        container = cols[i % 3]
+        with container:
+            user_inputs[col] = widget_for_col(col, X[col])
+    submitted = st.form_submit_button("Predict")
+
+if submitted:
+    input_df = pd.DataFrame([user_inputs])
+    pred_price = pipe.predict(input_df)[0]
+    st.success(f"**Predicted {target_col}:** {pred_price:,.0f}")
+
+# ----------------------------
+# Download trained model
+# ----------------------------
+st.subheader("Download Trained Model")
+buffer = io.BytesIO()
+pickle.dump(pipe, buffer)
+buffer.seek(0)
+st.download_button(
+    label="Download model (.pkl)",
+    data=buffer,
+    file_name="house_price_model.pkl",
+    mime="application/octet-stream"
+)
+
+st.caption("Tip: When uploading your own CSV, make sure the target column is numeric and feature columns are clean (no mixed types).")
